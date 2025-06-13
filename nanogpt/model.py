@@ -49,7 +49,7 @@ class CausalSelfAttention(nn.Module):
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
 
-    def forward(self, x):
+    def forward(self, x, attn_mask=None):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
@@ -61,7 +61,7 @@ class CausalSelfAttention(nn.Module):
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
             # efficient attention using Flash Attention CUDA kernels
-            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
+            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask.to(torch.bool)[:, None, None, :], dropout_p=self.dropout if self.training else 0, is_causal=True)
         else:
             # manual implementation of attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
@@ -100,8 +100,8 @@ class Block(nn.Module):
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
-    def forward(self, x):
-        x = x + self.attn(self.ln_1(x))
+    def forward(self, x, attn_mask=None):
+        x = x + self.attn(self.ln_1(x), attn_mask)
         x = x + self.mlp(self.ln_2(x))
         return x
 
@@ -167,7 +167,7 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx, targets=None, attn_mask=None):
         device = idx.device
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
@@ -178,7 +178,7 @@ class GPT(nn.Module):
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
-            x = block(x)
+            x = block(x, attn_mask)
         x = self.transformer.ln_f(x)
 
         if targets is not None:
@@ -186,8 +186,7 @@ class GPT(nn.Module):
             logits = self.lm_head(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
         else:
-            # inference-time mini-optimization: only forward the lm_head on the very last position
-            logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+            logits = self.lm_head(x) 
             loss = None
 
         return logits, loss
@@ -303,33 +302,56 @@ class GPT(nn.Module):
         return mfu
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
+    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None, attn_mask=None):
         """
-        Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
-        the sequence max_new_tokens times, feeding the predictions back into the model each time.
-        Most likely you'll want to make sure to be in model.eval() mode of operation for this.
+        Take a conditioning sequence of indices idx (LongTensor of shape (b, t)), where
+        trailing pad‐tokens (and attn_mask=0) indicate “empty” slots, and generate
+        up to max_new_tokens by writing into those pads one at a time.
         """
+        # 1’s for real tokens, 0’s for pads
+        if attn_mask is None:
+            attn_mask = torch.ones_like(idx)
+
+        batch_size, seq_len = idx.size()
+        device = idx.device
+        arange = torch.arange(batch_size, device=device)
+        counts = attn_mask.long().sum(dim=1)
+        if (counts == 0).any():
+            bad = (counts == 0).nonzero(as_tuple=False).squeeze(-1).tolist()
+            raise RuntimeError(f"Cannot generate for batch indices {bad!r}: all-padding inputs")
+
+        last_idxs = attn_mask.long().sum(dim=1) - 1  # shape (b,)
+
         for _ in range(max_new_tokens):
-            # if the sequence context is growing too long we must crop it at block_size
-            idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
-            # forward the model to get the logits for the index in the sequence
-            logits, _ = self(idx_cond)
-            # pluck the logits at the final step and scale by desired temperature
-            logits = logits[:, -1, :] / temperature
-            # optionally crop the logits to only the top k options
+            if seq_len > self.config.block_size:
+                raise RuntimeError("Context got too long")
+
+            # forward pass
+            logits, _ = self(idx, attn_mask=attn_mask)
+            # print(logits)
+            # print(logits.shape)
+
+            
+
+            # pick logits at each sequence’s last real token
+            last_logits = logits[arange, last_idxs, :] / temperature
+
+            # top-k filter (optional)
             if top_k is not None:
-                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                logits[logits < v[:, [-1]]] = -float('Inf')
-            # apply softmax to convert logits to (normalized) probabilities
-            probs = F.softmax(logits, dim=-1)
-            # sample from the distribution
-            idx_next = torch.multinomial(probs, num_samples=1)
-            # append sampled index to the running sequence and continue
-            # For my nanogpt models, 0 is the space index
-            # If we break here, we can significantly speed up inference
-            # But this is a hardcoded assumption specific to my models
-            if idx_next == 0:
-                break
-            idx = torch.cat((idx, idx_next), dim=1)
+                v, _ = torch.topk(last_logits, min(top_k, last_logits.size(-1)))
+                last_logits[last_logits < v[:, [-1]]] = -float('Inf')
+
+            # sample
+            probs = F.softmax(last_logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1).squeeze(-1)  # (b,)
+
+            # find first pad‐slot (sum(mask) gives exactly the index to write into)
+            write_pos = attn_mask.long().sum(dim=1)  # (b,)
+
+            # inplace write into idx and set mask=1
+            idx[arange, write_pos]       = next_token
+            attn_mask[arange, write_pos] = 1
+
+            last_idxs += 1
 
         return idx

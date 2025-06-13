@@ -10,7 +10,7 @@ import platform
 # NOTE: LLAMA AND NANOGPT ARE EXPERIMENTAL PLAYERS that most people won't need to use
 # They are commented by default to avoid unnecessary dependencies such as pytorch.
 # from llama_module import BaseLlamaPlayer, LocalLlamaPlayer, LocalLoraLlamaPlayer
-# from nanogpt.nanogpt_module import NanoGptPlayer
+from nanogpt.nanogpt_module import NanoGptPlayer
 import gpt_query
 
 from typing import Optional, Tuple
@@ -505,25 +505,25 @@ def play_game(
         # print(game_state)
 
 
-NANOGPT = False
+NANOGPT = True
 RUN_FOR_ANALYSIS = True
 MAX_MOVES = 1000
 if NANOGPT:
     MAX_MOVES = 89  # Due to nanogpt max input length of 1024
 recording_file = "logs/determine.csv"  # default recording file. Because we are using list [player_ones], recording_file is overwritten
-player_ones = ["stockfish_16layers_ckpt_no_optimizer.pt"]
-player_ones = ["gpt-3.5-turbo-instruct"]
+player_ones = ["lichess_8layers_ckpt_with_optimizer.pt"]
+# player_ones = ["gpt-3.5-turbo-instruct"]
 player_two_recording_name = "stockfish_sweep"
 if __name__ == "__main__":
     for player in player_ones:
         player_one_recording_name = player
-        for i in range(11):
-            num_games = 100
-            player_one = GPTPlayer(model=player)
+        for i in range(1):
+            num_games = 10
+            # player_one = GPTPlayer(model=player)
             # player_one = GPTPlayer(model="gpt-4")
             # player_one = StockfishPlayer(skill_level=-1, play_time=0.1)
-            # player_one = NanoGptPlayer(model_name=player_one_recording_name)
-            player_two = StockfishPlayer(skill_level=i, play_time=0.1)
+            player_one = NanoGptPlayer(model_name=player_one_recording_name)
+            player_two = StockfishPlayer(skill_level=1, play_time=0.1)
             # player_two = GPTPlayer(model="gpt-4")
             # player_two = GPTPlayer(model="gpt-3.5-turbo-instruct")
 

@@ -88,7 +88,7 @@ class NanoGptPlayer:
         device = "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1', etc.
         # device = "cpu"
         dtype = "float16"  # 'float32' or 'bfloat16' or 'float16'
-        compile = False  # use PyTorch 2.0 to compile the model to be faster
+        compile = True  # use PyTorch 2.0 to compile the model to be faster
         exec(
             open(f"{BASE_DIR}configurator.py").read()
         )  # overrides from command line or config file
@@ -202,6 +202,53 @@ class NanoGptPlayer:
         if ";" in model_response:
             model_response = model_response.split(";")[0]
         return model_response
+    
+    def get_nanogpt_response_batch(self, game_states, temperature: float) -> str:
+        MAX_LEN = 1000
+        num_samples = 1  # number of samples to draw
+        top_k = 200  # retain only the top_k most likely tokens, clamp others to have 0 probability
+        max_new_tokens = 10
+        
+        token_seqs = []
+        input_lens  = []
+        semicolon_id = self.encode(";")[0]  # or whatever your semicolon ID is
+
+        for gs in game_states:
+            gs = ";" + re.sub(r"(\d+\.) ", r"\1", gs)
+            ids = self.encode(gs)
+            input_lens.append(len(ids))
+            token_seqs.append(ids)
+            
+        padded = [
+            seq + [semicolon_id] * (MAX_LEN - len(seq))
+            for seq in token_seqs
+        ]
+        x = torch.tensor(padded, device=self.device)
+        
+        attention_mask = torch.zeros_like(x, dtype=torch.long)
+        for i, L in enumerate(input_lens):
+            attention_mask[i, :L] = 1
+            
+        print("gen in")
+        with torch.no_grad(), self.ctx:
+            y = self.model.generate(
+                x,
+                max_new_tokens,
+                temperature=temperature,
+                top_k=top_k,
+                attn_mask=attention_mask
+            )
+            
+        print("gen out")
+            
+        responses = []
+        for i, out_ids in enumerate(y):
+            new_ids = out_ids[input_lens[i]:]         
+            text    = self.decode(new_ids.tolist())
+            text    = text.split(";", 1)[0]            
+            responses.append(text)
+        return responses
+
 
     def get_move_from_response(self, response: str) -> str:
         # Parse the response to get only the first move
