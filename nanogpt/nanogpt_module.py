@@ -10,6 +10,7 @@ import torch
 import tiktoken
 from typing import Optional
 from nanogpt.model import GPTConfig, GPT
+import time
 
 BASE_DIR = "nanogpt/"
 
@@ -229,7 +230,6 @@ class NanoGptPlayer:
         for i, L in enumerate(input_lens):
             attention_mask[i, :L] = 1
             
-        print("gen in")
         with torch.no_grad(), self.ctx:
             y = self.model.generate(
                 x,
@@ -238,8 +238,7 @@ class NanoGptPlayer:
                 top_k=top_k,
                 attn_mask=attention_mask
             )
-            
-        print("gen out")
+
             
         responses = []
         for i, out_ids in enumerate(y):

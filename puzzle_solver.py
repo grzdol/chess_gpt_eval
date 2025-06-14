@@ -15,17 +15,22 @@ if __name__ == "__main__":
   model_name = 'lichess_8layers_ckpt_with_optimizer.pt'
   player = NanoGptPlayer(model_name)
   device = 'cuda'
-  bs = 1024
+  bs = 64
   
   dataset_path = "EleutherAI/lichess-puzzles"
   dataset = load_dataset(dataset_path)['train']
+  dataset = dataset.train_test_split(
+    test_size=0.01,     # 1%
+    seed=42,            # for reproducibility
+    shuffle=True
+  )["test"]
   loader = DataLoader(dataset, batch_size = bs)
   good = 0
   total = 10
-  for i, sample in enumerate(loader):
-    if i % 100 == 1:
-      print(f"{i} / {len(loader)}")
-      print(f"current acc: {good / i}")
+  for it, sample in enumerate(loader):
+    if it % 10 == 1:
+      print(f"{it} / {len(loader)}")
+      print(f"current acc: {good / it}")
     pgns = sample['ctx']
     tgts = sample['target']
     for i in range(len(pgns)):

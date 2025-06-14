@@ -4,3 +4,5 @@ tenacity==8.2.3
 python-chess==1.999
 matplotlib==3.8.0
 pandas==2.1.1
+datasets
+torch
