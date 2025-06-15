@@ -24,13 +24,16 @@ from contextlib import nullcontext
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
 from nanogpt.model import GPTConfig, GPT
 from torch.utils.data import DataLoader
 from datasets import load_dataset
-from utils import make_collate, calc_loss
+from utils import make_collate, calc_loss, calc_kl_loss
+from puzzle_evaluator import PuzzleEvaluator
+import copy
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
@@ -42,7 +45,7 @@ save_interval = 10000
 eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
 init_from = 'resume' # 'scratch' or 'resume' or 'gpt2*'
-checkpoint = 'lichess_8layers_ckpt_with_optimizer.pt'
+checkpoint = 'lichess_stockfish_mix_8layers_ckpt_with_optimizer.pt'
 # wandb logging
 wandb_log = True # disabled by default
 wandb_project = 'owt'
@@ -67,7 +70,7 @@ beta2 = 0.95
 grad_clip = 1.0 # clip gradients at this value, or disable if == 0.0
 # learning rate decay settings
 decay_lr = True # whether to decay the learning rate
-warmup_iters = 200 # how many steps to warm up for
+warmup_iters = 2000 # how many steps to warm up for
 lr_decay_iters = 600000 # should be ~= max_iters per Chinchilla
 min_lr = 1e-6 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
 # DDP settings
@@ -80,7 +83,10 @@ compile = True # use PyTorch 2.0 to compile the model to be faster
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 # exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
+alpha = 0.1
 # -----------------------------------------------------------------------------
+
+
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
@@ -134,8 +140,10 @@ dataset = dataset.train_test_split(
 ds_val = dataset['test']
 ds_train = dataset['train']
 
-val_loader = DataLoader(ds_val, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
+val_loader = DataLoader(ds_val, batch_size=1, shuffle=False)
 train_loader = DataLoader(ds_train, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+
+evaluator = PuzzleEvaluator(model_name=checkpoint, loader=val_loader, val_steps=500)
 
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
 iter_num = 1
@@ -198,6 +206,12 @@ if block_size < model.config.block_size:
     model.crop_block_size(block_size)
     model_args['block_size'] = block_size # so that the checkpoint will have the right value
 model.to(device)
+prior_model = copy.deepcopy(model)
+prior_model.eval()
+for p in prior_model.parameters():
+    p.requires_grad = False
+
+prior_model.to(next(model.parameters()).device)
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
@@ -260,10 +274,11 @@ local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
 running_mfu = -1.0
 for it, sample in enumerate(train_loader):
-    X, Y, mask = sample
+    X, Y, mask, ctx_mask = sample
     X = torch.tensor(X, device=device)
     Y = torch.tensor(Y, device=device)
-    mask = torch.tensor(mask, device=device)
+    mask = mask.to(device)
+    ctx_mask = ctx_mask.to(device)
     # determine and set the learning rate for this iteration
     lr = get_lr(iter_num) if decay_lr else learning_rate
     for param_group in optimizer.param_groups:
@@ -291,7 +306,11 @@ for it, sample in enumerate(train_loader):
                     'config': config,
                 }
         print(f"saving checkpoint to {out_dir}")
-        torch.save(checkpoint, os.path.join(out_dir, 'ckpt_good.pt'))
+        torch.save(checkpoint, os.path.join(out_dir, 'ckpt_stockfish.pt'))
+        acc = evaluator.eval(raw_model)
+        wandb.log({
+            "acc": acc,
+        })
     if iter_num == 0 and eval_only:
         break
 
@@ -305,7 +324,10 @@ for it, sample in enumerate(train_loader):
         model.require_backward_grad_sync = (it % gradient_accumulation_steps == - 1)
     with ctx:
         logits, _ = model(X, Y)
-        loss = calc_loss(logits, Y, mask)
+        with torch.no_grad():
+            prior_logits, _ = prior_model(X, Y)
+        loss = alpha * calc_loss(logits, Y, mask)
+        loss += calc_kl_loss(F.log_softmax(logits, dim=-1), F.log_softmax(prior_logits, dim=-1), ctx_mask)
         loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
     # immediately async prefetch next batch while model is doing the forward pass on the GPU
     # X, Y = get_batch('train')

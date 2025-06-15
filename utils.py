@@ -17,9 +17,10 @@ def collate_fn(batch, tokenizer, global_max_chars=1024):
        'id', 'ctx' (string), 'target' (string)
     tokenizer: callable mapping a string -> List[int]
     Returns:
-       X_seqs:   List[List[int]]       # each inner list len = batch_max-1
-       Y_seqs:   List[List[int]]       # each inner list len = batch_max-1
-       loss_mask: torch.ByteTensor     # shape (B, batch_max-1)
+       X_seqs:     List[List[int]]       # each inner list len = batch_max-1
+       Y_seqs:     List[List[int]]       # each inner list len = batch_max-1
+       loss_mask:  torch.ByteTensor      # shape (B, L)
+       ctx_mask:   torch.ByteTensor      # shape (B, L)
     """
     pad_char = tokenizer(';')[0]
 
@@ -53,9 +54,10 @@ def collate_fn(batch, tokenizer, global_max_chars=1024):
 
     X_seqs = []
     Y_seqs = []
-    mask_rows = []
+    loss_mask_rows = []
+    ctx_mask_rows  = []
 
-    # 4) pad all seqs to batch_max, build X/Y and loss‐mask
+    # 4) pad all seqs to batch_max, build X/Y, loss‐mask, and ctx‐mask
     for seq, ctx_len, orig_len, usable in zip(seqs, ctx_lens, orig_lens, valid_for_loss):
         # pad up to batch_max
         pad_len = batch_max - len(seq)
@@ -65,24 +67,31 @@ def collate_fn(batch, tokenizer, global_max_chars=1024):
         # shift for model input/target
         X = seq[:-1]   # length = batch_max-1
         Y = seq[1:]    # length = batch_max-1
+        L = batch_max - 1
 
-        # build loss mask
+        # build loss mask (only over true-target positions)
         if not usable:
-            mask = [0] * (batch_max - 1)
+            loss_mask = [0] * L
         else:
-            mask = []
-            for i in range(batch_max - 1):
-                idx = i + 1
-                # only mask true-target positions
-                mask.append(1 if (idx >= ctx_len and idx < orig_len) else 0)
+            loss_mask = [1 if (i+1 >= ctx_len and i+1 < orig_len) else 0
+                         for i in range(L)]
+
+        # build context mask (over all context positions in X)
+        # context tokens are those with index < ctx_len in the original seq
+        # and since X[j] = seq[j], that's j < ctx_len
+        ctx_mask = [1 if i < ctx_len else 0
+                    for i in range(L)]
 
         X_seqs.append(X)
         Y_seqs.append(Y)
-        mask_rows.append(mask)
+        loss_mask_rows.append(loss_mask)
+        ctx_mask_rows.append(ctx_mask)
 
-    # convert mask to ByteTensor
-    loss_mask = torch.ByteTensor(mask_rows)
-    return X_seqs, Y_seqs, loss_mask
+    # convert masks to ByteTensor
+    loss_mask = torch.ByteTensor(loss_mask_rows)
+    ctx_mask  = torch.ByteTensor(ctx_mask_rows)
+
+    return X_seqs, Y_seqs, loss_mask, ctx_mask
   
 def calc_loss(y_pred, y_seqs, mask_rows):
     """
@@ -112,3 +121,33 @@ def calc_loss(y_pred, y_seqs, mask_rows):
     loss = F.cross_entropy(logits_masked, target_masked, reduction='mean')
     return loss
   
+def calc_kl_loss(log_p_posterior, log_p_prior, ctx_mask):
+    """
+    log_p_posterior: FloatTensor (B, L, V) — log-probs from your posterior
+    log_p_prior:     FloatTensor (B, L, V) — log-probs from your prior
+    ctx_mask:        ByteTensor  (B, L)   — 1 for context tokens
+
+    Returns:
+      scalar: average KL over context positions
+    """
+    # KL per token = sum_q p_post(q) * [log p_post(q) - log p_prior(q)]
+    # F.kl_div takes (input, target) where input is log-probs w.r.t. target
+    # so swap args and use reduction='none'
+    kl_tensor = F.kl_div(
+        log_p_prior,          # input: log p_prior
+        log_p_posterior,      # target:   p_posterior (expects log-target)
+        reduction='none',
+        log_target=True
+    )  # → (B, L, V)
+
+    # sum over vocab to get per‐token KL
+    kl_per_token = kl_tensor.sum(-1)  # → (B, L)
+
+    mask = ctx_mask.bool().view(-1)   # flatten
+    kl_flat = kl_per_token.view(-1)
+
+    # if no context, avoid zero‐division
+    if mask.sum() == 0:
+        return torch.tensor(0., device=kl_per_token.device, requires_grad=True)
+
+    return kl_flat[mask].mean()

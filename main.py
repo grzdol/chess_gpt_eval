@@ -511,14 +511,15 @@ MAX_MOVES = 1000
 if NANOGPT:
     MAX_MOVES = 89  # Due to nanogpt max input length of 1024
 recording_file = "logs/determine.csv"  # default recording file. Because we are using list [player_ones], recording_file is overwritten
-player_ones = ["lichess_8layers_ckpt_with_optimizer.pt"]
+# player_ones = ['ckpt_div.pt']
+player_ones = ['ckpt_stockfish.pt']
 # player_ones = ["gpt-3.5-turbo-instruct"]
 player_two_recording_name = "stockfish_sweep"
 if __name__ == "__main__":
     for player in player_ones:
         player_one_recording_name = player
         for i in range(1):
-            num_games = 10
+            num_games = 50
             # player_one = GPTPlayer(model=player)
             # player_one = GPTPlayer(model="gpt-4")
             # player_one = StockfishPlayer(skill_level=-1, play_time=0.1)

@@ -231,7 +231,7 @@ class NanoGptPlayer:
             attention_mask[i, :L] = 1
             
         with torch.no_grad(), self.ctx:
-            y = self.model.generate(
+            y = self.model.generate_masked(
                 x,
                 max_new_tokens,
                 temperature=temperature,
