@@ -11,3 +11,4 @@ gpt_test_output.txt
 /nanogpt/activations/*
 logs/*
 .venv
+wandb
