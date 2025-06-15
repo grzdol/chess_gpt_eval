@@ -1,0 +1,1 @@
+nohup torchrun --standalone --nproc_per_node=2 puzzle_tune.py > output.log &

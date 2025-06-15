@@ -12,3 +12,5 @@ gpt_test_output.txt
 logs/*
 .venv
 wandb
+*.out
+*.log

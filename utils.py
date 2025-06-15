@@ -11,63 +11,78 @@ def reformat_pgn_line(line: str) -> str:
 def make_collate(tokenizer):
   return lambda batch: collate_fn(batch, tokenizer)
   
-def collate_fn(batch, tokenizer):
+def collate_fn(batch, tokenizer, global_max_chars=1024):
     """
     batch: List[dict] where each dict has keys
        'id', 'ctx' (string), 'target' (string)
+    tokenizer: callable mapping a string -> List[int]
     Returns:
-       X_seqs:   List[List[str]]       # each inner list len = 767
-       Y_seqs:   List[List[str]]       # each inner list len = 767
-       loss_mask: torch.ByteTensor     # shape (B, 767), 1 over true-target chars
+       X_seqs:   List[List[int]]       # each inner list len = batch_max-1
+       Y_seqs:   List[List[int]]       # each inner list len = batch_max-1
+       loss_mask: torch.ByteTensor     # shape (B, batch_max-1)
     """
-    max_chars = 768
-    pad_char  = tokenizer(';')[0]
+    pad_char = tokenizer(';')[0]
+
+    # 1) tokenize inputs
+    ctxs = [tokenizer(reformat_pgn_line(item['ctx'])) for item in batch]
+    tgts = [tokenizer(item['target'].strip())      for item in batch]
+
+    seqs      = []
+    ctx_lens  = []
+    orig_lens = []
+    valid_for_loss = []
+
+    # 2) build raw sequences, truncate to global_max_chars if needed
+    for ctx_ids, tgt_ids in zip(ctxs, tgts):
+        ctx_len = len(ctx_ids)
+        seq = list(ctx_ids) + list(tgt_ids)
+        orig_len = len(seq)
+
+        if orig_len > global_max_chars:
+            seq = seq[:global_max_chars]
+            valid_for_loss.append(False)
+        else:
+            valid_for_loss.append(True)
+
+        ctx_lens.append(ctx_len)
+        orig_lens.append(orig_len)
+        seqs.append(seq)
+
+    # 3) find batch‐max (longest seq in this batch)
+    batch_max = max(len(s) for s in seqs)
+
     X_seqs = []
     Y_seqs = []
     mask_rows = []
 
-    # first, extract and clean all ctx / target strings
-    ctxs = [tokenizer(reformat_pgn_line(item['ctx'])) for item in batch]
-    tgts = [tokenizer(item['target'].strip())  for item in batch]
+    # 4) pad all seqs to batch_max, build X/Y and loss‐mask
+    for seq, ctx_len, orig_len, usable in zip(seqs, ctx_lens, orig_lens, valid_for_loss):
+        # pad up to batch_max
+        pad_len = batch_max - len(seq)
+        if pad_len > 0:
+            seq = seq + [pad_char] * pad_len
 
-    for ctx_str, tgt_str in zip(ctxs, tgts):
-        ctx_chars = list(ctx_str)
-        tgt_chars = list(tgt_str)
+        # shift for model input/target
+        X = seq[:-1]   # length = batch_max-1
+        Y = seq[1:]    # length = batch_max-1
 
-        orig_len = len(ctx_chars) + len(tgt_chars)
-        seq = ctx_chars + tgt_chars
-
-        # truncate or pad to exactly max_chars
-        if len(seq) > max_chars:
-            seq = seq[:max_chars]
-            use_for_loss = False
-        else:
-            seq += [pad_char] * (max_chars - len(seq))
-            use_for_loss = True
-
-        # build X and Y (shifted by one)
-        X = seq[:-1]  # length = max_chars-1
-        Y = seq[1:]   # length = max_chars-1
-
-        # build loss mask: 1 only for true-target chars
-        if not use_for_loss:
-            # if truncated, we won’t compute loss
-            mask = [0] * (max_chars - 1)
+        # build loss mask
+        if not usable:
+            mask = [0] * (batch_max - 1)
         else:
             mask = []
-            for i in range(len(Y)):
+            for i in range(batch_max - 1):
                 idx = i + 1
-                # mark positions that fall in the original target span
-                in_target = (idx >= len(ctx_chars)
-                             and idx < orig_len)
-                mask.append(1 if in_target else 0)
+                # only mask true-target positions
+                mask.append(1 if (idx >= ctx_len and idx < orig_len) else 0)
 
         X_seqs.append(X)
         Y_seqs.append(Y)
         mask_rows.append(mask)
 
-    
-    return X_seqs, Y_seqs, mask_rows
+    # convert mask to ByteTensor
+    loss_mask = torch.ByteTensor(mask_rows)
+    return X_seqs, Y_seqs, loss_mask
   
 def calc_loss(y_pred, y_seqs, mask_rows):
     """

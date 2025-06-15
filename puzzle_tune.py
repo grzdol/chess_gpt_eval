@@ -38,7 +38,7 @@ out_dir = 'nanogpt/out'
 eval_interval = 200
 log_interval = 200
 eval_iters = 200
-save_interval = 1000
+save_interval = 10000
 eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
 init_from = 'resume' # 'scratch' or 'resume' or 'gpt2*'
@@ -59,7 +59,7 @@ n_embd = 768
 dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
 bias = False # do we use bias inside LayerNorm and Linear layers?
 # adamw optimizer
-learning_rate = 6e-5 # max learning rate
+learning_rate = 1e-5 # max learning rate
 max_iters = 600000 # total number of training iterations
 weight_decay = 1e-1
 beta1 = 0.9
@@ -67,9 +67,9 @@ beta2 = 0.95
 grad_clip = 1.0 # clip gradients at this value, or disable if == 0.0
 # learning rate decay settings
 decay_lr = True # whether to decay the learning rate
-warmup_iters = 2000 # how many steps to warm up for
+warmup_iters = 200 # how many steps to warm up for
 lr_decay_iters = 600000 # should be ~= max_iters per Chinchilla
-min_lr = 6e-5 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
+min_lr = 1e-6 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
 # DDP settings
 backend = 'nccl' # 'nccl', 'gloo', etc.
 # system
@@ -138,7 +138,7 @@ val_loader = DataLoader(ds_val, batch_size=batch_size, shuffle=False, collate_fn
 train_loader = DataLoader(ds_train, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
 
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
-iter_num = 0
+iter_num = 1
 best_val_loss = 1e9
 
 # attempt to derive vocab_size from the dataset
@@ -204,8 +204,8 @@ scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 
 # optimizer
 optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
-if init_from == 'resume':
-    optimizer.load_state_dict(checkpoint['optimizer'])
+# if init_from == 'resume':
+#     optimizer.load_state_dict(checkpoint['optimizer'])
 checkpoint = None # free up memory
 
 # compile the model
@@ -281,19 +281,17 @@ for it, sample in enumerate(train_loader):
         #         "lr": lr,
         #         "mfu": running_mfu*100, # convert to percentage
         #     })
-        # if losses['val'] < best_val_loss or always_save_checkpoint:
-        #     best_val_loss = losses['val']
-        #     if iter_num > 0:
-        #         checkpoint = {
-        #             'model': raw_model.state_dict(),
-        #             'optimizer': optimizer.state_dict(),
-        #             'model_args': model_args,
-        #             'iter_num': iter_num,
-        #             'best_val_loss': best_val_loss,
-        #             'config': config,
-        #         }
+        if always_save_checkpoint:
+            if iter_num > 0:
+                checkpoint = {
+                    'model': raw_model.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'model_args': model_args,
+                    'iter_num': iter_num,
+                    'config': config,
+                }
         print(f"saving checkpoint to {out_dir}")
-        torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
+        torch.save(checkpoint, os.path.join(out_dir, 'ckpt_good.pt'))
     if iter_num == 0 and eval_only:
         break
 
@@ -319,7 +317,7 @@ for it, sample in enumerate(train_loader):
     # backward pass, with gradient scaling if training in fp16
     scaler.scale(loss).backward()
     # clip the gradient
-    if it % gradient_accumulation_steps == - 1:
+    if (it + 1) % gradient_accumulation_steps == 0:
         if grad_clip != 0.0:
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
@@ -348,8 +346,8 @@ for it, sample in enumerate(train_loader):
                 "lr": lr,
                 "mfu": running_mfu*100, # convert to percentage
             })
-    iter_num += (it % gradient_accumulation_steps == - 1)
-    local_iter_num += (it % gradient_accumulation_steps == - 1)
+    iter_num += ((it + 1) % gradient_accumulation_steps == 0)
+    local_iter_num += ((it + 1) % gradient_accumulation_steps == 0)
 
     # termination conditions
     if iter_num > max_iters:
