@@ -399,6 +399,7 @@ def play_game(
     # NOTE: I'm being very particular with game_state formatting because I want to match the PGN notation exactly
     # It looks like this: 1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 etc. HOWEVER, GPT prompts should not end with a trailing whitespace
     # due to tokenization issues. If you make changes, ensure it still matches the PGN notation exactly.
+    points = 0
     for _ in range(max_games):  # Play 10 games
         with open("gpt_inputs/prompt.txt", "r") as f:
             game_state = f.read()
@@ -477,7 +478,12 @@ def play_game(
         end_time = time.time()
         total_time = end_time - start_time
         print(f"\nGame over. Total time: {total_time} seconds")
-        print(f"Result: {board.result()}")
+        res = board.result()
+        print(f"Result: {res}")
+        if res == "1-0":
+            points += 1
+        elif res == "1/2-1/2":
+            points += 0.5
         print(board)
         print()
         record_results(
@@ -497,6 +503,7 @@ def play_game(
             total_moves,
             illegal_moves,
         )
+        print(points)
     if isinstance(player_one, StockfishPlayer):
         player_one.close()
     if isinstance(player_two, StockfishPlayer):
@@ -512,19 +519,19 @@ if NANOGPT:
     MAX_MOVES = 89  # Due to nanogpt max input length of 1024
 recording_file = "logs/determine.csv"  # default recording file. Because we are using list [player_ones], recording_file is overwritten
 # player_ones = ['ckpt_div.pt']
-player_ones = ['ckpt_stockfish.pt']
+player_ones = ['stockfish_16layers_ckpt_with_optimizer.pt']
 # player_ones = ["gpt-3.5-turbo-instruct"]
 player_two_recording_name = "stockfish_sweep"
 if __name__ == "__main__":
     for player in player_ones:
         player_one_recording_name = player
         for i in range(1):
-            num_games = 50
+            num_games = 100
             # player_one = GPTPlayer(model=player)
             # player_one = GPTPlayer(model="gpt-4")
             # player_one = StockfishPlayer(skill_level=-1, play_time=0.1)
             player_one = NanoGptPlayer(model_name=player_one_recording_name)
-            player_two = StockfishPlayer(skill_level=1, play_time=0.1)
+            player_two = StockfishPlayer(skill_level=2, play_time=0.1)
             # player_two = GPTPlayer(model="gpt-4")
             # player_two = GPTPlayer(model="gpt-3.5-turbo-instruct")
 

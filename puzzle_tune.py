@@ -45,7 +45,7 @@ save_interval = 10000
 eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
 init_from = 'resume' # 'scratch' or 'resume' or 'gpt2*'
-checkpoint = 'lichess_stockfish_mix_8layers_ckpt_with_optimizer.pt'
+checkpoint = 'stockfish_16layers_ckpt_with_optimizer.pt'
 # wandb logging
 wandb_log = True # disabled by default
 wandb_project = 'owt'
@@ -308,9 +308,10 @@ for it, sample in enumerate(train_loader):
         print(f"saving checkpoint to {out_dir}")
         torch.save(checkpoint, os.path.join(out_dir, 'ckpt_stockfish.pt'))
         acc = evaluator.eval(raw_model)
-        wandb.log({
-            "acc": acc,
-        })
+        if wandb_log and master_process:
+            wandb.log({
+                "acc": acc,
+            })
     if iter_num == 0 and eval_only:
         break
 
