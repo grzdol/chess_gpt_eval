@@ -15,3 +15,5 @@ wandb
 *.out
 *.log
 checkpoints
+foo.py
+data/*
