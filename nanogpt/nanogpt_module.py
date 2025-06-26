@@ -259,7 +259,9 @@ class NanoGptPlayer:
         return first_move
 
     def get_move(self, board: str, game_state: str, temperature: float) -> str:
+        # print(game_state)
         completion = self.get_nanogpt_response(game_state, temperature)
+        # print(completion)
         return self.get_move_from_response(completion)
 
     def get_config(self) -> dict:

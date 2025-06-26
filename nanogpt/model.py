@@ -327,8 +327,8 @@ class GPT(nn.Module):
             # For my nanogpt models, 0 is the space index
             # If we break here, we can significantly speed up inference
             # But this is a hardcoded assumption specific to my models
-            if idx_next == 0:
-                break
+            # if idx_next == 0:
+            #     break
             idx = torch.cat((idx, idx_next), dim=1)
 
         return idx

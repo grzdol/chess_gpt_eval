@@ -399,7 +399,7 @@ def play_game(
     # NOTE: I'm being very particular with game_state formatting because I want to match the PGN notation exactly
     # It looks like this: 1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 etc. HOWEVER, GPT prompts should not end with a trailing whitespace
     # due to tokenization issues. If you make changes, ensure it still matches the PGN notation exactly.
-    points = 0
+    white_points, black_points = 0, 0
     for _ in range(max_games):  # Play 10 games
         with open("gpt_inputs/prompt.txt", "r") as f:
             game_state = f.read()
@@ -481,9 +481,12 @@ def play_game(
         res = board.result()
         print(f"Result: {res}")
         if res == "1-0":
-            points += 1
+            white_points += 1
         elif res == "1/2-1/2":
-            points += 0.5
+            white_points += 0.5
+            black_points += 0.5
+        elif res == "0-1":
+            black_points += 1
         print(board)
         print()
         record_results(
@@ -503,36 +506,46 @@ def play_game(
             total_moves,
             illegal_moves,
         )
-        print(points)
+        print(white_points, black_points)
     if isinstance(player_one, StockfishPlayer):
         player_one.close()
     if isinstance(player_two, StockfishPlayer):
         player_two.close()
+        
 
-        # print(game_state)
+
+    return white_points, black_points
 
 
 NANOGPT = True
-RUN_FOR_ANALYSIS = True
+RUN_FOR_ANALYSIS = False
 MAX_MOVES = 1000
 if NANOGPT:
     MAX_MOVES = 89  # Due to nanogpt max input length of 1024
 recording_file = "logs/determine.csv"  # default recording file. Because we are using list [player_ones], recording_file is overwritten
 # player_ones = ['ckpt_div.pt']
-player_ones = ['stockfish_16layers_ckpt_with_optimizer.pt']
+# player_ones = ['stockfish_16layers_ckpt_with_optimizer.pt']
+# player_ones = ['ckpt_stockfish.pt']
+# dpo_tune = 'ckpt_lichess_dpo.pt'
+# baseline = 'lichess_16layers_ckpt_with_optimizer.pt'
+dpo_tune = 'ckpt_stockfish.pt'
+baseline = 'stockfish_16layers_ckpt_with_optimizer.pt'
 # player_ones = ["gpt-3.5-turbo-instruct"]
 player_two_recording_name = "stockfish_sweep"
 if __name__ == "__main__":
-    for player in player_ones:
-        player_one_recording_name = player
-        for i in range(1):
-            num_games = 100
-            # player_one = GPTPlayer(model=player)
-            # player_one = GPTPlayer(model="gpt-4")
-            # player_one = StockfishPlayer(skill_level=-1, play_time=0.1)
-            player_one = NanoGptPlayer(model_name=player_one_recording_name)
-            player_two = StockfishPlayer(skill_level=2, play_time=0.1)
-            # player_two = GPTPlayer(model="gpt-4")
-            # player_two = GPTPlayer(model="gpt-3.5-turbo-instruct")
-
-            play_game(player_one, player_two, num_games)
+    num_games = 50
+    # player_one = GPTPlayer(model=player)
+    # player_one = GPTPlayer(model="gpt-4")
+    # player_one = StockfishPlayer(skill_level=-1, play_time=0.1)
+    player_one = NanoGptPlayer(model_name=dpo_tune)
+    player_two = NanoGptPlayer(model_name=baseline)
+    # player_one = StockfishPlayer(skill_level=0, play_time=0.1)
+    # player_two = GPTPlayer(model="gpt-4")
+    # player_two = GPTPlayer(model="gpt-3.5-turbo-instruct")
+    white1, black1 = play_game(player_one, player_two, num_games, randomize_opening_moves=5)
+    white2, black2 = play_game(player_two, player_one, num_games, randomize_opening_moves=5)
+    dpo_res = white1 + black2
+    baseline_res = black1 + white2
+    print("Match results: ")
+    print(f"Baseline points: {baseline_res}")
+    print(f"DPO tune points: {dpo_res}")

@@ -6,8 +6,6 @@ import pickle
 
 
 class PreferenceSet(Dataset):
-    """Face Landmarks dataset."""
-
     def __init__(self, csv_file):
         self.preferences = pd.read_csv(csv_file) #This is kinda terrible since this csv could be big
         data_dir = "nanogpt/out"
@@ -41,7 +39,7 @@ class PreferenceSet(Dataset):
           - rejected_attention_mask: LongTensor [B, L]
         """
         pad_token_id=15
-        max_length=1024
+        max_length=1023
         # turn lists into tensors and truncate
         chosen_seqs = [torch.tensor(item['chosen'], dtype=torch.long)[:max_length] 
                        for item in batch]
