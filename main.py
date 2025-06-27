@@ -526,10 +526,10 @@ recording_file = "logs/determine.csv"  # default recording file. Because we are 
 # player_ones = ['ckpt_div.pt']
 # player_ones = ['stockfish_16layers_ckpt_with_optimizer.pt']
 # player_ones = ['ckpt_stockfish.pt']
-# dpo_tune = 'ckpt_lichess_dpo.pt'
-# baseline = 'lichess_16layers_ckpt_with_optimizer.pt'
-dpo_tune = 'ckpt_stockfish.pt'
-baseline = 'stockfish_16layers_ckpt_with_optimizer.pt'
+dpo_tune = 'ckpt_lichess_dpo_high_beta.pt'
+baseline = 'lichess_16layers_ckpt_with_optimizer.pt'
+# dpo_tune = 'ckpt_stockfish.pt'
+# baseline = 'stockfish_16layers_ckpt_with_optimizer.pt'
 # player_ones = ["gpt-3.5-turbo-instruct"]
 player_two_recording_name = "stockfish_sweep"
 if __name__ == "__main__":
