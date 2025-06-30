@@ -1,8 +1,9 @@
 import torch
 import torch.nn.functional as F
 from torchtune.rlhf.loss import DPOLoss
+from nanogpt.criterion import Criterion
 
-class DPOCriterion:
+class DPOCriterion(Criterion):
     def __init__(self, trained_model, ref_model, beta=0.5, label_smoothing=0.0):
         """
         Args:

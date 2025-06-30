@@ -17,3 +17,6 @@ wandb
 checkpoints
 foo.py
 data/*
+*.csv
+*.json
+*.pt

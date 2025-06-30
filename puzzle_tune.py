@@ -36,6 +36,8 @@ from puzzle_evaluator import PuzzleEvaluator
 import copy
 from dpo_utils.dataset import PreferenceSet
 from dpo_utils.criterion import DPOCriterion
+from sft_utils.criterion import SFTCriterion
+from main import evaluate
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
@@ -48,6 +50,7 @@ eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
 init_from = 'resume' # 'scratch' or 'resume' or 'gpt2*'
 checkpoint = 'lichess_16layers_ckpt_with_optimizer.pt'
+init_checkpoint = checkpoint
 # wandb logging
 wandb_log = True # disabled by default
 wandb_project = 'owt'
@@ -85,7 +88,10 @@ compile = True # use PyTorch 2.0 to compile the model to be faster
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 # exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
-alpha = 0.1
+alpha = 10
+tune_type = 'SFT' #'DPO'
+save_file = 'lichess_puzzles_better.pt'
+ckpt_path = os.path.join(out_dir, checkpoint)
 # -----------------------------------------------------------------------------
 
 
@@ -143,10 +149,12 @@ ds_val = dataset['test']
 ds_train = dataset['train']
 
 val_loader = DataLoader(ds_val, batch_size=1, shuffle=False)
-train_loader = DataLoader(ds_train, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
 
-dataset = PreferenceSet('/workspace/nlp/chess_gpt_eval/data/preference_set.csv')
-train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=PreferenceSet.collate_fn)
+if tune_type == 'SFT':
+    train_loader = DataLoader(ds_train, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+else:
+    dataset = PreferenceSet('/workspace/nlp/chess_gpt_eval/data/preference_set.csv')
+    train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=PreferenceSet.collate_fn)
 
 evaluator = PuzzleEvaluator(model_name=checkpoint, loader=val_loader, val_steps=500)
 
@@ -218,7 +226,7 @@ for p in prior_model.parameters():
 
 prior_model.to(next(model.parameters()).device)
 
-criterion = DPOCriterion(model, prior_model)
+criterion = DPOCriterion(model, prior_model) if tune_type == 'DPO' else SFTCriterion(model, prior_model, alpha)
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
@@ -289,28 +297,12 @@ while iter_num < max_iters:
     })
     epoch += 1
     for it, sample in enumerate(train_loader):
-        # X, Y, mask, ctx_mask = sample
-        # X = torch.tensor(X, device=device)
-        # Y = torch.tensor(Y, device=device)
-        # mask = mask.to(device)
-        # ctx_mask = ctx_mask.to(device)
         # determine and set the learning rate for this iteration
         lr = get_lr(iter_num) if decay_lr else learning_rate
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
 
-        # evaluate the loss on train/val sets and write checkpoints
         if it % save_interval == 0 and master_process:
-            # losses = estimate_loss()
-            # print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-            # if wandb_log:
-            #     wandb.log({
-            #         "iter": iter_num,
-            #         "train/loss": losses['train'],
-            #         "val/loss": losses['val'],
-            #         "lr": lr,
-            #         "mfu": running_mfu*100, # convert to percentage
-            #     })
             if always_save_checkpoint:
                 if iter_num > 0:
                     checkpoint = {
@@ -321,11 +313,13 @@ while iter_num < max_iters:
                         'config': config,
                     }
             print(f"saving checkpoint to {out_dir}")
-            torch.save(checkpoint, os.path.join(out_dir, 'ckpt_lichess_dpo_high_beta.pt'))
-            acc = evaluator.eval(raw_model)
+            torch.save(checkpoint, os.path.join(out_dir, save_file))
+            puzzle_acc = evaluator.eval(raw_model)
+            acc = evaluate(save_file, init_checkpoint, num_games=50)
             if wandb_log and master_process:
                 wandb.log({
                     "acc": acc,
+                    'puzzle_acc': puzzle_acc
                 })
         if iter_num == 0 and eval_only:
             break
@@ -339,20 +333,8 @@ while iter_num < max_iters:
             # looking at the source of that context manager, it just toggles this variable
             model.require_backward_grad_sync = (it % gradient_accumulation_steps == - 1)
         with ctx:
-            # logits, _ = model(X, Y)
-            # with torch.no_grad():
-            #     prior_logits, _ = prior_model(X, Y)
-            # loss = alpha * calc_loss(logits, Y, mask)
-            # loss += calc_kl_loss(F.log_softmax(logits, dim=-1), F.log_softmax(prior_logits, dim=-1), ctx_mask)
             loss = criterion.get_loss(sample)
             loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
-        # immediately async prefetch next batch while model is doing the forward pass on the GPU
-        # X, Y = get_batch('train')
-        # if iter_num < 10:
-        #     print("Batch")
-        #     print(X)
-        #     print("y")
-        #     print(Y)
         # backward pass, with gradient scaling if training in fp16
         scaler.scale(loss).backward()
         # clip the gradient

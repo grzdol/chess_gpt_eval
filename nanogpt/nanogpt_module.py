@@ -185,8 +185,9 @@ class NanoGptPlayer:
 
         game_state = ";" + game_state
 
+        if len(game_state.splitlines()) > 1:
+            game_state = game_state.replace("\n", "")
         # print("game_state", game_state)
-
         start_ids = self.encode(game_state)
 
         x = torch.tensor(start_ids, dtype=torch.long, device=self.device)[None, ...]

@@ -15,6 +15,8 @@ import gpt_query
 
 from typing import Optional, Tuple
 from dataclasses import dataclass
+import json
+import wandb
 
 
 @dataclass
@@ -272,6 +274,7 @@ def initialize_game_with_opening(
             move = token
 
         board.push_san(move)
+    print(game_state)
     return game_state, board
 
 
@@ -395,6 +398,7 @@ def play_game(
     player_two: Player,
     max_games: int = 10,
     randomize_opening_moves: Optional[int] = None,
+    random_opening = False
 ):
     # NOTE: I'm being very particular with game_state formatting because I want to match the PGN notation exactly
     # It looks like this: 1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 etc. HOWEVER, GPT prompts should not end with a trailing whitespace
@@ -409,7 +413,9 @@ def play_game(
             game_state, board = initialize_game_with_random_moves(
                 board, game_state, randomize_opening_moves
             )
-
+        elif random_opening:
+            game_state, board = initialize_game_with_opening(game_state, board)
+        
         player_one_illegal_moves = 0
         player_two_illegal_moves = 0
         player_one_legal_moves = 0
@@ -517,35 +523,80 @@ def play_game(
     return white_points, black_points
 
 
+def evaluate(model_path, ref_model_path, num_games=50):
+    player_one = NanoGptPlayer(model_name=model_path)
+    player_two = NanoGptPlayer(model_name=ref_model_path)
+    # player_one = StockfishPlayer(skill_level=0, play_time=0.1)
+    # player_two = GPTPlayer(model="gpt-4")
+    # player_two = GPTPlayer(model="gpt-3.5-turbo-instruct")
+    white1, black1 = play_game(player_one, player_two, num_games, randomize_opening_moves=5)
+    white2, black2 = play_game(player_two, player_one, num_games, randomize_opening_moves=5)
+    model_res = white1 + black2
+    return model_res
+
+
 NANOGPT = True
 RUN_FOR_ANALYSIS = False
 MAX_MOVES = 1000
 if NANOGPT:
     MAX_MOVES = 89  # Due to nanogpt max input length of 1024
 recording_file = "logs/determine.csv"  # default recording file. Because we are using list [player_ones], recording_file is overwritten
-# player_ones = ['ckpt_div.pt']
-# player_ones = ['stockfish_16layers_ckpt_with_optimizer.pt']
-# player_ones = ['ckpt_stockfish.pt']
-dpo_tune = 'ckpt_lichess_dpo_high_beta.pt'
+
+puzzle_tune = 'lichess_puzzles_better.pt'
+dpo_tune = 'bb.pt'
 baseline = 'lichess_16layers_ckpt_with_optimizer.pt'
-# dpo_tune = 'ckpt_stockfish.pt'
-# baseline = 'stockfish_16layers_ckpt_with_optimizer.pt'
-# player_ones = ["gpt-3.5-turbo-instruct"]
-player_two_recording_name = "stockfish_sweep"
+ckpts = [puzzle_tune, dpo_tune, baseline]
+num_games = 500
+
 if __name__ == "__main__":
-    num_games = 50
-    # player_one = GPTPlayer(model=player)
-    # player_one = GPTPlayer(model="gpt-4")
-    # player_one = StockfishPlayer(skill_level=-1, play_time=0.1)
-    player_one = NanoGptPlayer(model_name=dpo_tune)
-    player_two = NanoGptPlayer(model_name=baseline)
-    # player_one = StockfishPlayer(skill_level=0, play_time=0.1)
-    # player_two = GPTPlayer(model="gpt-4")
-    # player_two = GPTPlayer(model="gpt-3.5-turbo-instruct")
-    white1, black1 = play_game(player_one, player_two, num_games, randomize_opening_moves=5)
-    white2, black2 = play_game(player_two, player_one, num_games, randomize_opening_moves=5)
-    dpo_res = white1 + black2
-    baseline_res = black1 + white2
-    print("Match results: ")
-    print(f"Baseline points: {baseline_res}")
-    print(f"DPO tune points: {dpo_res}")
+    wandb.init(
+        project='eval_chess'
+    )
+    result_dict = {}
+    log_dict = {}  # new dict to collect detailed log data
+
+    for i, player_one in enumerate(ckpts):
+        for player_two in ckpts[i:]:
+            if player_one == player_two:
+                continue
+
+            key = f"{player_one}_vs_{player_two}"
+            result_dict[key] = {}
+            log_dict[key] = {}
+            
+
+            # play with random opening
+            p_one = NanoGptPlayer(model_name=player_one)
+            p_two = NanoGptPlayer(model_name=player_two)
+            white1, black1 = play_game(p_one, p_two, num_games, random_opening=True)
+            white2, black2 = play_game(p_two, p_one, num_games, random_opening=True)
+            p1_res_opening = white1 + black2
+            p2_res_opening = black1 + white2
+            result_dict[key]['random_opening'] = (p1_res_opening, p2_res_opening)
+            log_dict[key]['random_opening'] = {
+                'p1_score': p1_res_opening,
+                'p2_score': p2_res_opening,
+                'details': {'white1': white1, 'black1': black1, 'white2': white2, 'black2': black2}
+            }
+
+            # play with randomized opening moves
+            white1, black1 = play_game(p_one, p_two, num_games, randomize_opening_moves=5)
+            white2, black2 = play_game(p_two, p_one, num_games, randomize_opening_moves=5)
+            p1_res_random = white1 + black2
+            p2_res_random = black1 + white2
+            result_dict[key]['randomize_opening_moves=5'] = (p1_res_random, p2_res_random)
+            log_dict[key]['randomize_opening_moves=5'] = {
+                'p1_score': p1_res_random,
+                'p2_score': p2_res_random,
+                'details': {'white1': white1, 'black1': black1, 'white2': white2, 'black2': black2}
+            }
+
+    # print or log both summary dicts
+    with open('results_summary2.json', 'w') as f:
+        json.dump(result_dict, f, indent=2)
+    with open('detailed_logs2.json', 'w') as f:
+        json.dump(log_dict, f, indent=2)
+    print("Results summary:", result_dict)
+    print("Detailed logs:", log_dict)
+
+            
